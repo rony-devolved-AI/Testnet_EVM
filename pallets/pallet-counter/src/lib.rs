@@ -35,11 +35,17 @@ pub mod pallet {
     pub struct Pallet<T>(_);
 
     #[pallet::config]
-    pub trait Config: frame_system::Config + pallet_evm::Config {
+    pub trait Config: frame_system::Config + pallet_evm::Config + pallet_session::Config {
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
         type SubstrateCurrency: Currency<Self::AccountId> + ReservableCurrency<Self::AccountId>;
         type EvmCurrency: Currency<Self::AccountId>;
+        type StakingInfoProvider: GetValidatorStake<Self::AccountId>;
+        type SessionHandler: SessionHandler<Self::AccountId>;
     }
+
+
+    #[pallet::hooks]
+    impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {}
 
     #[pallet::storage]
     #[pallet::getter(fn locked_balance)]
@@ -69,7 +75,36 @@ pub mod pallet {
     }
 
     #[pallet::call]
-    impl<T: Config> Pallet<T> {
+    impl<T: Config> Pallet<T>  where T::AccountId:Ord{
+
+        type Key = sp_consensus_babe::AuthorityId;
+
+
+        fn on_new_session<'a, I: 'a>(_changed: bool, validators: I, _queued_validators: I)
+        where
+            I: Iterator<Item = (&'a T::AccountId, Self::Key)>,
+        {
+            let mut validators: Vec<(&'a T::AccountId, u128, Self::Key)> = validators
+                .map(|(id, key)| (id, T::StakingInfoProvider::get_validator_stake(id), key))
+                .collect();
+
+            validators.sort_by(|a, b| b.1.cmp(&a.1)); // Sort validators by stake in descending order
+
+            let selected_validators = validators.into_iter().map(|(id, _, key)| (*id, key));
+
+            T::SessionHandler::on_new_session(_changed, selected_validators);
+        }
+
+        fn on_genesis_session<'a, I: 'a>(validators: I)
+        where
+            I: Iterator<Item = (&'a T::AccountId, Self::Key)>,
+        {
+            Self::on_new_session(false, validators, None);
+        }
+
+        fn on_disabled(_index: u32) {}
+        }
+
         #[pallet::weight(10_000)]
         pub fn mint(origin: OriginFor<T>, account: T::AccountId, amount: SubstrateBalanceOf<T>) -> DispatchResult {
             ensure_root(origin)?;
