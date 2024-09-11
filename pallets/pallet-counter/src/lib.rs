@@ -1,6 +1,8 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 pub use pallet::*;
+// use pallet_session::SessionHandler;
+
 
 #[frame_support::pallet]
 pub mod pallet {
@@ -10,6 +12,7 @@ pub mod pallet {
         traits::{Currency, ReservableCurrency},
     };
     use frame_system::pallet_prelude::*;
+    use sp_runtime::traits::OpaqueKeys;
     use pallet_evm::Pallet as EvmPallet;
     use sp_core::{H160, U256, H256, ecdsa};
     use sp_runtime::traits::SaturatedConversion;
@@ -21,9 +24,12 @@ pub mod pallet {
     use hex_literal::hex;
     use sp_core::crypto::ByteArray;
     use sp_runtime::traits::StaticLookup;
+    use pallet_staking::{Pallet as StakingPallet};
+    use pallet_grandpa::{Pallet as Grandpa};
     use pallet_evm::{AddressMapping, PrecompileSet, Vicinity};
     use sp_io::crypto::secp256k1_ecdsa_recover;
     use scale_info::prelude::string::String;
+    use super::*;
 
 
 
@@ -35,17 +41,11 @@ pub mod pallet {
     pub struct Pallet<T>(_);
 
     #[pallet::config]
-    pub trait Config: frame_system::Config + pallet_evm::Config + pallet_session::Config {
+    pub trait Config: frame_system::Config + pallet_evm::Config + pallet_session::Config + pallet_staking::Config {
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
         type SubstrateCurrency: Currency<Self::AccountId> + ReservableCurrency<Self::AccountId>;
         type EvmCurrency: Currency<Self::AccountId>;
-        type StakingInfoProvider: GetValidatorStake<Self::AccountId>;
-        type SessionHandler: SessionHandler<Self::AccountId>;
     }
-
-
-    #[pallet::hooks]
-    impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {}
 
     #[pallet::storage]
     #[pallet::getter(fn locked_balance)]
@@ -61,6 +61,7 @@ pub mod pallet {
         EvmBalanceChecked(H160, U256),
         EvmBalanceMutated(H160, U256, bool),
         EvmToSubstrateTransfer(H160, T::AccountId, u128),
+        ValidatorSelected(Vec<T::AccountId>),
     }
 
     #[pallet::error]
@@ -74,36 +75,62 @@ pub mod pallet {
         InvalidSignature,
     }
 
+
+    #[pallet::hooks]
+    impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {}
+
+    impl<T: Config> SessionHandler<T::AccountId> for Pallet<T> {
+        // Specify the key types for your session handler (e.g., BABE, GRANDPA)
+        const KEY_TYPE_IDS: &'static [sp_runtime::KeyTypeId] = &[
+            pallet_babe::KEY_TYPE,      // BABE key type
+            pallet_grandpa::KEY_TYPE,   // GRANDPA key type
+        ];
+    
+        fn on_new_session<Ks: OpaqueKeys>(
+            _changed: bool,
+            validators: &[(T::AccountId, Ks)],
+            _queued_validators: &[(T::AccountId, Ks)],
+        ) {
+            // Call the custom validator selection logic
+            let prioritized_validators = Self::select_validators(validators);
+            
+            // Emit the event for the prioritized validators
+            Self::deposit_event(Event::ValidatorsSelected(prioritized_validators));
+        }
+    
+        fn on_disabled(_validator_index: u32) {}
+    
+        fn on_genesis_session<Ks: OpaqueKeys>(validators: &[(T::AccountId, Ks)]) {
+            // Optionally, handle genesis session here using the same logic as new session
+            let prioritized_validators = Self::select_validators(validators);
+            Self::deposit_event(Event::ValidatorsSelected(prioritized_validators));
+        }
+    }
+    
+
+
     #[pallet::call]
-    impl<T: Config> Pallet<T>  where T::AccountId:Ord{
+    impl<T: Config> Pallet<T> {
 
-        type Key = sp_consensus_babe::AuthorityId;
-
-
-        fn on_new_session<'a, I: 'a>(_changed: bool, validators: I, _queued_validators: I)
-        where
-            I: Iterator<Item = (&'a T::AccountId, Self::Key)>,
-        {
-            let mut validators: Vec<(&'a T::AccountId, u128, Self::Key)> = validators
-                .map(|(id, key)| (id, T::StakingInfoProvider::get_validator_stake(id), key))
+        pub fn select_validators<Ks: OpaqueKeys>(
+            validators: &[(T::AccountId, Ks)],
+        ) -> Vec<T::AccountId> {
+            // Fetch staking amounts for each validator
+            let mut validators_with_stake: Vec<(T::AccountId, T::Balance)> = validators
+                .iter()
+                .map(|(validator, _)| {
+                    let stake = StakingPallet::<T>::bonded(validator).unwrap_or_default();
+                    (validator.clone(), stake)
+                })
                 .collect();
 
-            validators.sort_by(|a, b| b.1.cmp(&a.1)); // Sort validators by stake in descending order
+            // Sort validators based on their staked amount (descending)
+            validators_with_stake.sort_by(|a, b| b.1.cmp(&a.1));
 
-            let selected_validators = validators.into_iter().map(|(id, _, key)| (*id, key));
-
-            T::SessionHandler::on_new_session(_changed, selected_validators);
+            // Collect and return the prioritized list of validators
+            validators_with_stake.into_iter().map(|(validator, _)| validator).collect()
         }
 
-        fn on_genesis_session<'a, I: 'a>(validators: I)
-        where
-            I: Iterator<Item = (&'a T::AccountId, Self::Key)>,
-        {
-            Self::on_new_session(false, validators, None);
-        }
-
-        fn on_disabled(_index: u32) {}
-        }
 
         #[pallet::weight(10_000)]
         pub fn mint(origin: OriginFor<T>, account: T::AccountId, amount: SubstrateBalanceOf<T>) -> DispatchResult {

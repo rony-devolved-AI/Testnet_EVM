@@ -20,7 +20,12 @@ sp-io = { version = "23.0.0", git = "https://github.com/paritytech/substrate.git
 hex = { version = "0.4.3", default-features = false, features = ["alloc"] }
 sp-std = { version = "8.0.0", default-features = false, git = "https://github.com/paritytech/substrate.git", branch = "polkadot-v1.0.0" }
 hex-literal = "0.4.1"
-# secp256k1 = { version = "0.29.0", features = ["default", "serde"] }
+pallet-babe = { version = "4.0.0-dev", default-features = false, git = "https://github.com/paritytech/substrate.git", branch = "polkadot-v1.0.0" }
+pallet-session = { version = "4.0.0-dev", features = [ "historical" ], git = "https://github.com/paritytech/substrate.git", branch = "polkadot-v1.0.0", default-features = false }
+pallet-staking = { version = "4.0.0-dev", default-features = false, git = "https://github.com/paritytech/substrate.git", branch = "polkadot-v1.0.0"}
+pallet-grandpa = { version = "4.0.0-dev", default-features = false, git = "https://github.com/paritytech/substrate.git", branch = "polkadot-v1.0.0" }
+
+
 
 [features]
 default = ["std"]
@@ -30,4 +35,8 @@ std = [
     "frame-system/std",
     "scale-info/std",
     "pallet-evm/std", 
+    "pallet-babe/std",
+    "pallet-session/std",
+    "pallet-staking/std",
+    "pallet-grandpa/std"
 ]
