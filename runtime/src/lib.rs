@@ -798,21 +798,81 @@ impl pallet_election_provider_multi_phase::MinerConfig for Runtime {
     type AccountId = AccountId;
     type MaxLength = MinerMaxLength;
     type MaxWeight = MinerMaxWeight;
-    type Solution = NposSolution16;
+    type Solution = NposSolution16;  // Solution type defined by ElectionProvider
     type MaxVotesPerVoter =
-	<<Self as pallet_election_provider_multi_phase::Config>::DataProvider as ElectionDataProvider>::MaxVotesPerVoter;
+        <<Self as pallet_election_provider_multi_phase::Config>::DataProvider as ElectionDataProvider>::MaxVotesPerVoter;
     type MaxWinners = MaxActiveValidators;
 
     // The unsigned submissions have to respect the weight of the submit_unsigned call, thus their
     // weight estimate function is wired to this call's weight.
     fn solution_weight(v: u32, t: u32, a: u32, d: u32) -> Weight {
         <
-		<Self as pallet_election_provider_multi_phase::Config>::WeightInfo
-		as
-		pallet_election_provider_multi_phase::WeightInfo
-		>::submit_unsigned(v, t, a, d)
+            <Self as pallet_election_provider_multi_phase::Config>::WeightInfo
+            as
+            pallet_election_provider_multi_phase::WeightInfo
+        >::submit_unsigned(v, t, a, d)
+    }
+
+    // Function to create a solution based on staked amounts
+    fn create_solution() -> NposSolution16 {
+        // Get the current list of validator candidates from staking
+        let all_validators = pallet_staking::Validators::<Runtime>::iter();
+
+        // Sort candidates based on their total staked amount
+        let mut sorted_validators: Vec<(AccountId, u128)> = all_validators
+            .map(|(validator, _)| {
+                let total_stake = pallet_staking::Stakers::<Runtime>::get(&validator)
+                    .unwrap_or_default().total;
+                (validator, total_stake)
+            })
+            .collect();
+
+        // Sort in descending order of total stake
+        sorted_validators.sort_by(|a, b| b.1.cmp(&a.1));
+
+        // Extract the top N validators based on stake
+        let selected_validators: Vec<AccountId> = sorted_validators
+            .into_iter()
+            .take(MaxActiveValidators::get() as usize)
+            .map(|(validator, _)| validator)
+            .collect();
+
+        // Dummy voter list for the purpose of this example
+        let voter_list: Vec<AccountId> = vec![
+            // Fill this with some voters for demonstration
+        ];
+
+        // Create assignments for voters to the top-stake validators
+        let assignments: Vec<Assignment<AccountId, sp_runtime::Perbill>> = voter_list
+            .iter()
+            .enumerate()
+            .map(|(voter_idx, voter)| {
+                Assignment {
+                    who: voter.clone(),
+                    distribution: selected_validators.iter().enumerate().map(|(i, _)| {
+                        // Distribute votes among the selected validators
+                        (i as TargetIndex, sp_runtime::Perbill::from_percent(100 / selected_validators.len() as u32))
+                    }).collect(),
+                    stake: pallet_staking::Stakers::<Runtime>::get(voter).unwrap_or_default().total,
+                }
+            })
+            .collect();
+
+        // Generate NposSolution16 using the from_assignment method
+        NposSolution16::from_assignment(
+            &assignments,
+            |voter| {
+                voter_list.iter().position(|v| v == voter).map(|i| i as VoterIndex)
+            },
+            |target| {
+                selected_validators.iter().position(|v| v == target).map(|i| i as TargetIndex)
+            }
+        ).unwrap_or_default()
     }
 }
+
+
+
 
 impl pallet_election_provider_multi_phase::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
